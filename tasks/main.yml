@@ -1,0 +1,80 @@
+---
+# tasks file for mapr-loopbacknfs
+
+- name: install mapr-loopbacknfs
+  sudo_user: root
+  yum: name=mapr-loopbacknfs state=installed
+  environment: proxy_env
+
+- name: get cluster name
+  shell: head -1 /opt/mapr/conf/mapr-clusters.conf | awk '{ print $1 }'
+  register: mapr_cluster_name
+  changed_when: false
+
+- name: get security boolean
+  shell: head -1 /opt/mapr/conf/mapr-clusters.conf | awk '{ print $2 }'
+  register: security_boolean
+  changed_when: false
+
+- name: get cluster CLDBs
+  shell: head -1 /opt/mapr/conf/mapr-clusters.conf  | awk '{ for (i=3; i<NF; i++) printf $i " ";  printf $NF}'
+  register: mapr_cluster_cldbs
+  changed_when: false
+
+- name: set cluster name as fact
+  set_fact: mapr_cluster_name="{{mapr_cluster_name.stdout}}"
+
+- name: set cluster CLDBs as fact
+  set_fact: mapr_cluster_cldbs="{{mapr_cluster_cldbs.stdout}}"
+
+- name: set security boolean as fact
+  set_fact: is_secure={{security_boolean.stdout|search("true")}} 
+
+- name: configure cluster name in loopbacknfs init script
+  sudo_user: root
+  lineinfile: dest=/etc/init.d/mapr-loopbacknfs regexp="^CLUSTER_NAME" line='CLUSTER_NAME="{{mapr_cluster_name}}"'
+
+- name: configure security boolean in loopbacknfs init script
+  sudo_user: root
+  lineinfile: dest=/etc/init.d/mapr-loopbacknfs regexp="^IS_SECURE" line='IS_SECURE="{{is_secure}}"'
+
+- name: configure CLDB IPs in loopbacknfs init script
+  sudo_user: root
+  lineinfile: dest=/etc/init.d/mapr-loopbacknfs regexp="^CLDB_IPS" line='CLDB_IPS="{{mapr_cluster_cldbs}}"'
+
+- name: set path to loopbacknfs ticket
+  sudo_user: root
+  lineinfile: dest=/etc/init.d/mapr-loopbacknfs regexp='^MAPR_TICKETFILE_LOCATION' line='MAPR_TICKETFILE_LOCATION=/usr/local/mapr-loopbacknfs/conf/loopbacknfsticket'
+  when: is_secure
+
+- name: change ownership of loopbacknfs conf dir
+  sudo_user: root
+  file: state=directory owner=mapr group=mapr path=/usr/local/mapr-loopbacknfs/conf
+
+- name: generate a key for loopbacknfs service
+  sudo_user: mapr
+  command: creates=/usr/local/mapr-loopbacknfs/conf/loopbacknfsticket maprlogin generateticket -type service -user mapr -duration 1000:0:0 -out /usr/local/mapr-loopbacknfs/conf/loopbacknfsticket
+  when: is_secure
+
+- name: make mount points
+  sudo_user: root
+  file: state=directory path={{item}}
+  with_items:
+    - /apps
+    - /mapr
+
+- name: add mount points to mapr_fstab
+  sudo_user: root
+  lineinfile: create=yes dest=/usr/local/mapr-loopbacknfs/conf/mapr_fstab line="localhost:/mapr /mapr hard,nolock" regexp="\s+/mapr"
+
+- name: add mount points to mapr_fstab
+  sudo_user: root
+  lineinfile: create=yes dest=/usr/local/mapr-loopbacknfs/conf/mapr_fstab line="localhost:/mapr/{{mapr_cluster_name}}/apps /apps hard,nolock" regexp="\s+/apps"
+
+- name: copy mapr-clusters.conf to mapr-loopbacknfs home
+  sudo_user: root
+  command: cp /opt/mapr/conf/mapr-clusters.conf /usr/local/mapr-loopbacknfs/conf
+
+- name: start mapr-loopbacknfs
+  sudo_user: root
+  service: name=mapr-loopbacknfs state=started
